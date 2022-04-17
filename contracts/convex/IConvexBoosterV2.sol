@@ -53,8 +53,14 @@ interface IConvexBoosterV2 is IConvexBooster {
 
     function addConvexPool(uint256 _originConvexPid) external override;
 
-    function addConvexPool(uint256 _originConvexPid, address _curveSwapAddress, address _curveZapAddress, address _basePoolAddress, bool _isMeta, bool _isMetaFactory)
-        external;
+    function addConvexPool(
+        uint256 _originConvexPid,
+        address _curveSwapAddress,
+        address _curveZapAddress,
+        address _basePoolAddress,
+        bool _isMeta,
+        bool _isMetaFactory
+    ) external;
 
     function getPoolZapAddress(address _lpToken)
         external
@@ -68,4 +74,14 @@ interface IConvexBoosterV2 is IConvexBooster {
         uint256 _tokens,
         int128 _curveCoinId
     ) external view returns (uint256);
+
+    function updateMovingLeverage(
+        uint256 _pid,
+        uint256 _tokens,
+        int128 _curveCoinId
+    ) external returns (uint256);
+}
+
+interface IMovingLeverageBase {
+    function get(uint256 _pid, int128 _coinId) external view returns (uint256);
 }

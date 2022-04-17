@@ -176,6 +176,11 @@ contract LendingMarketV2 is Initializable, ReentrancyGuard {
         uint256 lendingThreshold,
         uint256 liquidateThreshold
     );
+    event UpdatePoolMapping(
+        uint256 pid,
+        uint256[] supportPids,
+        int128[] curveCoinIds
+    );
 
     modifier onlyOwner() {
         require(owner == msg.sender, "LendingMarket: caller is not the owner");
@@ -255,7 +260,7 @@ contract LendingMarketV2 is Initializable, ReentrancyGuard {
 
     function withdraw(uint256 _pid, uint256 _token0) public nonReentrant {
         require(_pid < poolInfo.length, "!_pid");
-        
+
         PoolInfo storage pool = poolInfo[_pid];
 
         require(deposits[_pid][msg.sender] >= _token0, "!deposits");
@@ -277,13 +282,13 @@ contract LendingMarketV2 is Initializable, ReentrancyGuard {
         uint256 _token0,
         uint256 _borrowBlock,
         uint256 _supportPid
-    ) public payable nonReentrant {
+    ) public payable nonReentrant returns (bytes32) {
         require(borrowBlocks[_borrowBlock], "!borrowBlocks");
         require(msg.value == 0.1 ether, "!lendingSponsor");
 
         deposits[_pid][msg.sender] = deposits[_pid][msg.sender].sub(_token0);
 
-        _borrow(_pid, _supportPid, _borrowBlock, _token0, true);
+        return _borrow(_pid, _supportPid, _borrowBlock, _token0, true);
     }
 
     function borrow(
@@ -291,24 +296,24 @@ contract LendingMarketV2 is Initializable, ReentrancyGuard {
         uint256 _token0,
         uint256 _borrowBlock,
         uint256 _supportPid
-    ) public payable nonReentrant {
+    ) public payable nonReentrant returns (bytes32) {
         require(borrowBlocks[_borrowBlock], "!borrowBlocks");
         require(msg.value == 0.1 ether, "!lendingSponsor");
 
-        _borrow(_pid, _supportPid, _borrowBlock, _token0, false);
+        return _borrow(_pid, _supportPid, _borrowBlock, _token0, false);
     }
 
     function getBorrowInfo(
         uint256 _convexPid,
         int128 _curveCoinId,
         uint256 _token0
-    ) internal view returns (address, uint256) {
+    ) internal returns (address, uint256) {
         address lpToken = IConvexBoosterV2(convexBooster).getPoolToken(
             _convexPid
         );
 
         uint256 token0Price = IConvexBoosterV2(convexBooster)
-            .calculateTokenAmount(_convexPid, _token0, _curveCoinId);
+            .updateMovingLeverage(_convexPid, _token0, _curveCoinId);
 
         return (lpToken, token0Price);
     }
@@ -319,7 +324,7 @@ contract LendingMarketV2 is Initializable, ReentrancyGuard {
         uint256 _borrowBlocks,
         uint256 _token0,
         bool _preStored
-    ) internal returns (LendingParams memory) {
+    ) internal returns (bytes32) {
         PoolInfo storage pool = poolInfo[_pid];
 
         pool.borrowIndex++;
@@ -435,6 +440,8 @@ contract LendingMarketV2 is Initializable, ReentrancyGuard {
             lendingParams.lendingAmount,
             _borrowBlocks
         );
+
+        return lendingId;
     }
 
     function _repayBorrow(
@@ -787,6 +794,21 @@ contract LendingMarketV2 is Initializable, ReentrancyGuard {
         );
     }
 
+    function updatePoolMapping(
+        uint256 _pid,
+        uint256[] calldata _supplyBoosterPids,
+        int128[] calldata _curveCoinIds
+    ) public onlyGovernance {
+        require(_pid < poolInfo.length, "!_pid");
+
+        PoolInfo storage pool = poolInfo[_pid];
+
+        pool.supportPids = _supplyBoosterPids;
+        pool.curveCoinIds = _curveCoinIds;
+
+        emit UpdatePoolMapping(_pid, _supplyBoosterPids, _curveCoinIds);
+    }
+
     /* function toBytes16(uint256 x) internal pure returns (bytes16 b) {
         return bytes16(bytes32(x));
     } */
@@ -841,14 +863,14 @@ contract LendingMarketV2 is Initializable, ReentrancyGuard {
         return userLending.lendingAmount;
     }
 
-    function getPoolSupportPids(uint256 _pid)
+    function getPoolSupportPid(uint256 _pid, uint256 _supportPid)
         public
         view
-        returns (uint256[] memory)
+        returns (uint256)
     {
         PoolInfo storage pool = poolInfo[_pid];
 
-        return pool.supportPids;
+        return pool.supportPids[_supportPid];
     }
 
     function getCurveCoinId(uint256 _pid, uint256 _supportPid)
@@ -879,7 +901,7 @@ contract LendingMarketV2 is Initializable, ReentrancyGuard {
         uint256 _lendingThreshold,
         uint256 _liquidateThreshold,
         uint256 _borrowBlocks
-    ) public view returns (LendingParams memory) {
+    ) public returns (LendingParams memory) {
         (address lpToken, uint256 token0Price) = getBorrowInfo(
             _convexPid,
             _curveCoinId,

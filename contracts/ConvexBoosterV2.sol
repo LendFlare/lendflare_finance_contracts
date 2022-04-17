@@ -61,10 +61,17 @@ contract ConvexBoosterV2 is Initializable, ReentrancyGuard, IConvexBoosterV2 {
         bool isMetaFactory;
     }
 
+    struct MovingLeverage {
+        uint256 prev;
+        uint256 origin;
+    }
+
     PoolInfo[] public override poolInfo;
 
     mapping(uint256 => mapping(address => uint256)) public frozenTokens; // pid => (user => amount)
     mapping(address => MetaPoolInfo) public metaPoolInfo;
+    mapping(uint256 => mapping(int128 => MovingLeverage))
+        public movingLeverages; // pid =>(coin id => MovingLeverage)
 
     event Deposited(address indexed user, uint256 indexed pid, uint256 amount);
     event Withdrawn(address indexed user, uint256 indexed pid, uint256 amount);
@@ -87,6 +94,19 @@ contract ConvexBoosterV2 is Initializable, ReentrancyGuard, IConvexBoosterV2 {
         int128 coinId
     );
     event ClaimRewardToken(uint256 pid);
+    event SetOriginMovingLeverage(
+        uint256 _pid,
+        int128 _curveCoinId,
+        uint256 base,
+        uint256 current,
+        uint256 blockNumber
+    );
+    event UpdateMovingLeverage(
+        uint256 _pid,
+        int128 _curveCoinId,
+        uint256 prev,
+        uint256 current
+    );
 
     modifier onlyOwner() {
         require(owner == msg.sender, "ConvexBooster: caller is not the owner");
@@ -644,6 +664,87 @@ contract ConvexBoosterV2 is Initializable, ReentrancyGuard, IConvexBoosterV2 {
         }
     }
 
+    function updateMovingLeverage(
+        uint256 _pid,
+        uint256 _tokens,
+        int128 _curveCoinId
+    ) public override onlyLendingMarket returns (uint256) {
+        MovingLeverage storage movingLeverage = movingLeverages[_pid][
+            _curveCoinId
+        ];
+
+        uint256 amount = calculateTokenAmount(_pid, _tokens, _curveCoinId);
+        uint256 current = amount.mul(1e18).div(_tokens);
+
+        if (0 == movingLeverage.origin) {
+            movingLeverage.origin = IMovingLeverageBase(
+                0xd132C63A09fccfeF56b88c5ACa8Ecbb63F814A46
+            ).get(_pid, _curveCoinId);
+        }
+
+        require(movingLeverage.origin > 0, "!Origin need to update");
+
+        uint256 originScalePercent = getMovingLeverageScale(
+            movingLeverage.origin,
+            current
+        );
+
+        originScalePercent = originScalePercent.mul(1000).div(1e18);
+
+        // <= 10%
+        require(originScalePercent <= 100, "!Origin scale exceeded");
+
+        if (movingLeverage.prev > 0) {
+            uint256 prevScalePercent = getMovingLeverageScale(
+                movingLeverage.prev,
+                current
+            );
+
+            prevScalePercent = prevScalePercent.mul(1000).div(1e18);
+
+            // <= 5%
+            require(prevScalePercent <= 50, "!Prev scale exceeded");
+        }
+
+        movingLeverage.prev = current;
+
+        emit UpdateMovingLeverage(
+            _pid,
+            _curveCoinId,
+            movingLeverage.prev,
+            current
+        );
+
+        return amount;
+    }
+
+    function setOriginMovingLeverage(
+        uint256 _pid,
+        uint256 _tokens,
+        int128 _curveCoinId
+    ) public onlyOwner {
+        require(_tokens >= 10e18, "!Tokens is too small");
+
+        MovingLeverage storage movingLeverage = movingLeverages[_pid][
+            _curveCoinId
+        ];
+
+        uint256 amount = calculateTokenAmount(_pid, _tokens, _curveCoinId);
+
+        uint256 oldLeverage = movingLeverage.origin;
+        uint256 newLeverage = amount.mul(1e18).div(_tokens);
+
+        movingLeverage.origin = newLeverage;
+
+        emit SetOriginMovingLeverage(
+            _pid,
+            _curveCoinId,
+            oldLeverage,
+            newLeverage,
+            block.timestamp
+        );
+    }
+
     // solhint-disable-next-line no-empty-blocks
     receive() external payable {}
 
@@ -691,11 +792,23 @@ contract ConvexBoosterV2 is Initializable, ReentrancyGuard, IConvexBoosterV2 {
         return ICurveSwapV2(_swapAddress).coins(uint256(_coinId));
     }
 
+    function getMovingLeverageScale(uint256 _base, uint256 _current)
+        internal
+        pure
+        returns (uint256)
+    {
+        if (_base >= _current) {
+            return _base.sub(_current).mul(1e18).div(_base);
+        }
+
+        return _current.sub(_base).mul(1e18).div(_base);
+    }
+
     function calculateTokenAmount(
         uint256 _pid,
         uint256 _tokens,
         int128 _curveCoinId
-    ) external view override returns (uint256) {
+    ) public view override returns (uint256) {
         PoolInfo storage pool = poolInfo[_pid];
 
         if (metaPoolInfo[pool.lpToken].zapAddress != address(0)) {
